@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1
+# Fork-only PG18 failover build. No production deployment or registry publication.
+ARG BUILDER_IMAGE=builder
+FROM postgres:18-trixie AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-server-dev-18 postgresql-18-pgvector build-essential ca-certificates \
+    curl git pkg-config libssl-dev libicu-dev clang lld binutils libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup
+ENV PATH="/opt/cargo/bin:/usr/lib/postgresql/18/bin:${PATH}"
+WORKDIR /versions
+COPY rust-toolchain.toml Cargo.toml ./
+RUN rust=$(sed -nE 's/^channel = "([^"]+)"$/\1/p' rust-toolchain.toml) && \
+    pgrx=$(sed -nE 's/^pgrx = "=?([^"]+)"$/\1/p' Cargo.toml) && \
+    test -n "$rust" && test -n "$pgrx" && \
+    curl -fsSL --retry 5 --retry-all-errors https://sh.rustup.rs -o /tmp/rustup.sh && \
+    sh /tmp/rustup.sh -y --profile minimal --default-toolchain "$rust" && \
+    cargo install cargo-pgrx --version "$pgrx" --debug --locked && \
+    cargo pgrx init --pg18=/usr/lib/postgresql/18/bin/pg_config
+
+# Bound memory and disk use on local builders. This is an experimental, unoptimized-
+# for-size artifact, not the upstream release build profile.
+ENV CARGO_BUILD_JOBS=4 CARGO_PROFILE_RELEASE_LTO=false \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_PROFILE_DEV_DEBUG=0
+WORKDIR /build
+COPY . .
+ARG TARGETARCH
+RUN --mount=type=cache,id=physical-failover-target-${TARGETARCH},target=/build/target \
+    --mount=type=cache,id=physical-failover-registry-${TARGETARCH},target=/opt/cargo/registry \
+    --mount=type=cache,id=physical-failover-git-${TARGETARCH},target=/opt/cargo/git \
+    cp Cargo.lock /source-Cargo.lock && \
+    cargo pgrx package --package pg_search --profile release \
+    --features experimental-physical-failover \
+    --pg-config /usr/lib/postgresql/18/bin/pg_config --out-dir /package && \
+    cmp Cargo.lock /source-Cargo.lock && \
+    mkdir -p /artifacts/usr/lib/postgresql/18/lib /artifacts/usr/share/postgresql/18/extension && \
+    find /package -type f -name 'pg_search*.so' -exec cp {} /artifacts/usr/lib/postgresql/18/lib/ \; && \
+    find /package -type f -name 'pg_search*.control' -exec cp {} /artifacts/usr/share/postgresql/18/extension/ \; && \
+    find /package -type f -name 'pg_search*.sql' -exec cp {} /artifacts/usr/share/postgresql/18/extension/ \; && \
+    test -s /artifacts/usr/lib/postgresql/18/lib/pg_search.so && \
+    test -s /artifacts/usr/share/postgresql/18/extension/pg_search.control
+
+# Run the real streaming-replication regression against the exact built library.
+FROM ${BUILDER_IMAGE} AS test
+COPY tests/tests/replication.rs /build/tests/tests/replication.rs
+RUN cp -a /artifacts/. /
+ENV PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PG_SEARCH_TEST_PHYSICAL_FAILOVER=1
+ARG TARGETARCH
+RUN --mount=type=cache,id=physical-failover-target-${TARGETARCH},target=/build/target \
+    --mount=type=cache,id=physical-failover-registry-${TARGETARCH},target=/opt/cargo/registry \
+    --mount=type=cache,id=physical-failover-git-${TARGETARCH},target=/opt/cargo/git \
+    cargo test --locked --release --package tests --test replication \
+    --no-run && \
+    test_binary=$(find target/release/deps -maxdepth 1 -type f -name 'replication-*' -executable) && \
+    test -n "$test_binary" && \
+    gosu postgres "$test_binary" test_wal_streaming_replication_with_pg_search --exact --nocapture || \
+    { status=$?; cat /tmp/ephemeral_postgres_logs/*.log; exit "$status"; }
+
+# Export the complete extension, not just the shared library (SQL/control must match).
+FROM scratch AS artifacts
+COPY --from=test /artifacts/ /
+
+FROM postgres:18-trixie AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-18-pgvector libopenblas0-pthread && rm -rf /var/lib/apt/lists/*
+COPY --from=test /artifacts/ /
+CMD ["postgres", "-c", "shared_preload_libraries=pg_search"]

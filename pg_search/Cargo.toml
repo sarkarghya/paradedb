@@ -22,6 +22,9 @@ pg_test = ["dep:proptest"]
 dst = ["dst/enabled", "dep:antithesis-instrumentation"]
 unsafe-postgres = ["pgrx/unsafe-postgres"]
 block_tracker = [] # for debugging when blocks are acquired and released
+# Fork-only opt-in: replay index WAL for promotion, but do not serve standby reads.
+# This is not Enterprise physical replication and is not production-certified.
+experimental-physical-failover = []
 debug-logging = [
   "dep:env_logger",
 ] # enables env_logger for dependency debug output

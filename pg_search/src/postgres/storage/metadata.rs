@@ -139,6 +139,17 @@ impl MetaPage {
 
     pub fn open(indexrel: &PgSearchRelation) -> Self {
         if unsafe { pgrx::pg_sys::HotStandbyActive() } && unsafe { !pg_sys::XLogInsertAllowed() } {
+            #[cfg(feature = "experimental-physical-failover")]
+            ErrorReport::new(
+                PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+                "ParadeDB search indexes cannot be read during recovery in the experimental physical-failover build",
+                function_name!(),
+            )
+            .set_detail("Index WAL can be replayed for promotion, but concurrent standby search reads are not supported.")
+            .set_hint("Route search queries to the primary. Retry after the standby has been promoted and recovery has ended.")
+            .report(PgLogLevel::ERROR);
+
+            #[cfg(not(feature = "experimental-physical-failover"))]
             ErrorReport::new(
                 PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
                 "Serving reads from a standby requires write-ahead log (WAL) integration, which is supported on ParadeDB Enterprise, not ParadeDB Community",

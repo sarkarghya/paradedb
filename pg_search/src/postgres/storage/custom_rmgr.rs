@@ -28,12 +28,21 @@ const XLOG_PG_SEARCH_INIT_INDEX_NAME: &CStr = c"INIT_INDEX";
 #[pg_guard]
 unsafe extern "C-unwind" fn rm_redo(record: *mut pg_sys::XLogReaderState) {
     let info = (*(*record).record).header.xl_info & !(pg_sys::XLR_INFO_MASK as u8);
-    if info == XLOG_PG_SEARCH_INIT_INDEX && pg_sys::StandbyMode {
+    if info == XLOG_PG_SEARCH_INIT_INDEX
+        && pg_sys::StandbyMode
+        && !cfg!(feature = "experimental-physical-failover")
+    {
         pgrx::error!(
             "replicas are not supported on community and require paradedb enterprise, \
              which guarantees physical replication safety on standbys."
         );
     }
+    // INIT_INDEX is only a compatibility marker: ambuild WAL-logs the actual index
+    // pages with log_newpage_range, and subsequent writes use full-page images or
+    // Generic WAL. Keep recognizing old markers as well as emitting new ones so a
+    // failover build can replay WAL produced before it was installed. This opt-in
+    // does NOT make concurrent standby reads safe; MetaPage::open still rejects
+    // them. Only access the replicated index once recovery has ended.
 }
 
 #[pg_guard]

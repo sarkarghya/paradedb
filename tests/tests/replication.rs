@@ -729,13 +729,26 @@ async fn test_wal_streaming_replication_with_pg_search() -> Result<()> {
     );
     assert_eq!(standby_rows.len(), 4);
 
-    // Now build a bm25 index on the primary. ambuild emits the rmgr 137 marker; when the
-    // standby replays it, rm_redo aborts recovery with our "not supported" error.
+    // ambuild emits the rmgr 137 marker. Community rejects it; the fork's
+    // experimental physical-failover build must replay it without stopping recovery.
     "
     CREATE INDEX items_search_idx ON items
     USING paradedb (id, description, category);
     "
     .execute(&mut source_conn);
+
+    // This opt-in must only be used against a library built with
+    // `experimental-physical-failover`; the test below proves it really replays WAL,
+    // rejects standby search reads, and uses the copied index after promotion.
+    if std::env::var("PG_SEARCH_TEST_PHYSICAL_FAILOVER").as_deref() == Ok("1") {
+        return test_pg_search_physical_failover(
+            &source_postgres,
+            &standby_postgres,
+            &mut source_conn,
+            &mut standby_conn,
+        )
+        .await;
+    }
 
     // Wait for the marker to stream to the standby and FATAL its recovery process. Poll the
     // log instead of sleeping for a fixed duration so the test self-paces.
@@ -768,6 +781,240 @@ async fn test_wal_streaming_replication_with_pg_search() -> Result<()> {
         "expected reconnect to dead standby to fail, got {reconnect:?}"
     );
 
+    Ok(())
+}
+
+// Wait for WAL, not row counts or a fixed sleep: index, merge, and VACUUM records
+// must have replayed too. Each poll is a fresh autocommit snapshot.
+async fn wait_for_replay(primary: &mut PgConnection, standby: &mut PgConnection) -> Result<()> {
+    let lsn: String = sqlx::query_scalar("SELECT pg_current_wal_flush_lsn()::text")
+        .fetch_one(primary)
+        .await?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let caught_up: bool = sqlx::query_scalar(
+            "SELECT COALESCE(pg_last_wal_replay_lsn() >= $1::text::pg_lsn, false)",
+        )
+        .bind(&lsn)
+        .fetch_one(&mut *standby)
+        .await?;
+        if caught_up {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "standby did not replay through {lsn}"
+        );
+        async_std::task::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn test_pg_search_physical_failover(
+    primary: &EphemeralPostgres,
+    standby: &EphemeralPostgres,
+    primary_conn: &mut PgConnection,
+    standby_conn: &mut PgConnection,
+) -> Result<()> {
+    // Ordinary relations must continue to stream after INIT_INDEX, including an
+    // ordinary index on a different table. An empty search index also emits a marker.
+    primary_conn
+        .execute("CREATE TABLE ordinary (id int PRIMARY KEY, value text)")
+        .await?;
+    primary_conn
+        .execute("CREATE INDEX ordinary_value_idx ON ordinary (value)")
+        .await?;
+    primary_conn
+        .execute("INSERT INTO ordinary VALUES (1, 'after index creation')")
+        .await?;
+    primary_conn
+        .execute("CREATE TABLE empty_items (id bigint, body text)")
+        .await?;
+    primary_conn
+        .execute("CREATE INDEX empty_items_idx ON empty_items USING paradedb (id, body)")
+        .await?;
+    wait_for_replay(primary_conn, standby_conn).await?;
+    let ordinary: String = sqlx::query_scalar("SELECT value FROM ordinary WHERE id = 1")
+        .fetch_one(&mut *standby_conn)
+        .await?;
+    assert_eq!(ordinary, "after index creation");
+
+    // No hot-standby search reads: a query error must not kill recovery, poison the
+    // connection, or allow a planner/admin path to initialize legacy metadata.
+    let error = standby_conn
+        .execute("SELECT id FROM items WHERE description ||| 'shoes'")
+        .await
+        .expect_err("standby search must fail cleanly");
+    let error = error
+        .as_database_error()
+        .expect("expected a PostgreSQL error");
+    assert_eq!(error.code().as_deref(), Some("0A000"));
+    assert!(error.message().contains("cannot be read during recovery"));
+    let recovering: bool = sqlx::query_scalar("SELECT pg_is_in_recovery()")
+        .fetch_one(&mut *standby_conn)
+        .await?;
+    assert!(recovering);
+
+    // Exercise mutable segments, full-page images, Generic WAL, aborted inserts,
+    // updates, deletes, COPY, VACUUM, immutable segments, and index rebuilds.
+    for batch in 0..4 {
+        sqlx::query("INSERT INTO items (description, category) SELECT 'replicated shoes ' || i, 'batch' FROM generate_series($1::int, $1::int + 127) s(i)")
+            .bind(batch * 128).execute(&mut *primary_conn).await?;
+    }
+    primary_conn
+        .execute("BEGIN; INSERT INTO items (description) VALUES ('rolled back shoes'); ROLLBACK")
+        .await?;
+    primary_conn
+        .execute("UPDATE items SET description = 'updated headphones' WHERE id = 3")
+        .await?;
+    primary_conn
+        .execute("DELETE FROM items WHERE id = 4 OR id % 7 = 0")
+        .await?;
+    let mut copy = primary_conn
+        .copy_in_raw("COPY items(description, category) FROM STDIN")
+        .await?;
+    copy.send("copied shoes\tcopy\ncopied headphones\tcopy\n".as_bytes())
+        .await?;
+    copy.finish().await?;
+    primary_conn.execute("VACUUM items").await?;
+    primary_conn
+        .execute("ALTER INDEX items_search_idx SET (mutable_segment_rows = 0)")
+        .await?;
+    for _ in 0..4 {
+        primary_conn.execute("INSERT INTO items (description, category) SELECT 'immutable shoes ' || i, 'immutable' FROM generate_series(1, 128) s(i)").await?;
+    }
+    primary_conn.execute("VACUUM items").await?;
+    // Rebuild a separate index so REINDEX cannot hide missing incremental WAL
+    // for items_search_idx. The promoted items index is never rebuilt in this test.
+    primary_conn
+        .execute("CREATE TABLE rebuilt_items (id bigint, body text)")
+        .await?;
+    primary_conn
+        .execute("INSERT INTO rebuilt_items VALUES (1, 'rebuilt shoes')")
+        .await?;
+    primary_conn
+        .execute("CREATE INDEX rebuilt_items_idx ON rebuilt_items USING paradedb (id, body)")
+        .await?;
+    primary_conn
+        .execute("REINDEX INDEX CONCURRENTLY rebuilt_items_idx")
+        .await?;
+    primary_conn
+        .execute("INSERT INTO rebuilt_items VALUES (2, 'after rebuild shoes')")
+        .await?;
+    primary_conn.execute("CHECKPOINT").await?;
+    wait_for_replay(primary_conn, standby_conn).await?;
+
+    let expected: Vec<(i32, String)> =
+        sqlx::query_as("SELECT id, description FROM items ORDER BY id")
+            .fetch_all(&mut *primary_conn)
+            .await?;
+    let actual: Vec<(i32, String)> =
+        sqlx::query_as("SELECT id, description FROM items ORDER BY id")
+            .fetch_all(&mut *standby_conn)
+            .await?;
+    assert_eq!(
+        actual, expected,
+        "heap WAL must still replay after index maintenance"
+    );
+
+    // A standby restart must replay to consistency with the exact same extension.
+    let ctl = &standby.pg_ctl_path;
+    let data = &standby.tempdir_path;
+    let log = &standby.log_path;
+    run_cmd!($ctl -D $data -l $log restart -m fast)?;
+    *standby_conn = standby.connection().await?;
+    primary_conn
+        .execute("INSERT INTO items (description) VALUES ('before failover shoes')")
+        .await?;
+    primary_conn
+        .execute("UPDATE ordinary SET value = 'still replicating' WHERE id = 1")
+        .await?;
+    wait_for_replay(primary_conn, standby_conn).await?;
+
+    let expected_all: Vec<(i32, String)> =
+        sqlx::query_as("SELECT id, description FROM items ORDER BY id")
+            .fetch_all(&mut *primary_conn)
+            .await?;
+    let expected_shoes: Vec<(i32,)> =
+        sqlx::query_as("SELECT id FROM items WHERE description ||| 'shoes' ORDER BY id")
+            .fetch_all(&mut *primary_conn)
+            .await?;
+
+    // Replay index changes belonging to a transaction that will never commit.
+    // Promotion must preserve committed rows and never expose these documents.
+    let mut pending = primary.connection().await?;
+    pending.execute("BEGIN").await?;
+    pending
+        .execute("INSERT INTO items (description) VALUES ('uncommitted shoes')")
+        .await?;
+    pending
+        .execute("UPDATE items SET description = 'uncommitted replacement' WHERE id = 1")
+        .await?;
+    pending.execute("DELETE FROM items WHERE id = 3").await?;
+    primary_conn.execute("CHECKPOINT").await?;
+    wait_for_replay(primary_conn, standby_conn).await?;
+
+    // Simulate the database-level operation Patroni performs. No REINDEX on the
+    // promoted node is permitted: these assertions must use the copied index.
+    let ctl = &primary.pg_ctl_path;
+    let data = &primary.tempdir_path;
+    run_cmd!($ctl -D $data stop -m immediate)?;
+    let ctl = &standby.pg_ctl_path;
+    let data = &standby.tempdir_path;
+    run_cmd!($ctl -D $data promote -w -t 60)?;
+
+    let recovering: bool = sqlx::query_scalar("SELECT pg_is_in_recovery()")
+        .fetch_one(&mut *standby_conn)
+        .await?;
+    assert!(!recovering);
+    let actual_all: Vec<(i32, String)> =
+        sqlx::query_as("SELECT id, description FROM items WHERE id @@@ pdb.all() ORDER BY id")
+            .fetch_all(&mut *standby_conn)
+            .await?;
+    assert_eq!(
+        actual_all, expected_all,
+        "copied index must cover the heap after promotion"
+    );
+    let actual_shoes: Vec<(i32,)> =
+        sqlx::query_as("SELECT id FROM items WHERE description ||| 'shoes' ORDER BY id")
+            .fetch_all(&mut *standby_conn)
+            .await?;
+    assert_eq!(actual_shoes, expected_shoes);
+    let empty_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM empty_items WHERE body ||| 'shoes'")
+            .fetch_one(&mut *standby_conn)
+            .await?;
+    assert_eq!(empty_count, 0);
+    let rebuilt_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rebuilt_items WHERE body ||| 'shoes'")
+            .fetch_one(&mut *standby_conn)
+            .await?;
+    assert_eq!(rebuilt_count, 2);
+
+    standby_conn
+        .execute("INSERT INTO items (description) VALUES ('promoted shoes')")
+        .await?;
+    standby_conn
+        .execute("UPDATE items SET description = 'promoted headphones' WHERE id = 3")
+        .await?;
+    standby_conn
+        .execute("DELETE FROM items WHERE id = 2")
+        .await?;
+    standby_conn.execute("VACUUM items").await?;
+    let promoted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM items WHERE description ||| 'promoted'")
+            .fetch_one(&mut *standby_conn)
+            .await?;
+    assert_eq!(promoted, 2);
+    let passed: Option<bool> = sqlx::query_scalar(
+        "SELECT bool_and(passed) FROM pdb.verify_index('items_search_idx', heapallindexed => true)",
+    )
+    .fetch_one(&mut *standby_conn)
+    .await?;
+    assert_eq!(
+        passed,
+        Some(true),
+        "copied index must verify after promoted writes and VACUUM"
+    );
     Ok(())
 }
 
