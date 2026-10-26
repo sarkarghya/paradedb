@@ -122,9 +122,26 @@ distribution ABI must match; copying the `.so` alone is not sufficient.
 
 The manual **Experimental physical failover artifacts** GitHub Actions workflow
 builds and tests natively on both architectures, then uploads matching extension
-files with the source revision and SHA-256 checksums. It does not publish releases
+files with the source revision and SHA-256 checksums. Before upload, it also runs
+the disposable Patroni/etcd smoke test below. It does not publish releases
 or deploy a database. It also runs on pushes to the dedicated
 `fix/experimental-physical-index-ha` branch; it does not run on ordinary main pushes.
+
+### Disposable Patroni test
+
+```shell
+docker build --file docker/Dockerfile.experimental-ha --target patroni-test \
+  --tag paradedb-physical-failover:patroni-test .
+PARADEDB_HA_IMAGE=paradedb-physical-failover:patroni-test \
+  python3 tests/physical_failover/smoke.py
+```
+
+This creates a uniquely named, isolated two-member Patroni cluster and one etcd
+node with test-only credentials and no host ports. It kills the primary, verifies
+search using the copied index on the elected primary without REINDEX, checks new
+indexed writes, rejoins the former primary, then repeats in the opposite
+direction. It removes only its own containers and volumes on exit. It is not a
+test of etcd quorum failure, production fencing, or zero-data-loss semantics.
 
 ### Patroni constraints
 
@@ -145,7 +162,8 @@ or deploy a database. It also runs on pushes to the dedicated
 - Validate a disposable cluster with production-equivalent PostgreSQL version,
   architecture, workload, backups, restores, cascading replication, failback,
   concurrent maintenance, and crash timing before considering a rollout. The
-  regression uses `pg_ctl promote`, **not** a full Patroni/etcd election test.
+  Rust regression uses `pg_ctl promote`; the separate smoke test exercises real
+  Patroni/etcd elections and former-primary rejoining.
 - Do not downgrade a replica to the ordinary Community library while it may
   replay `INIT_INDEX`: the original shutdown behavior would return. Retain the
   matching extension artifacts with backups. Do not mix this fork with Enterprise

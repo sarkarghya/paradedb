@@ -61,9 +61,21 @@ RUN --mount=type=cache,id=physical-failover-target-${TARGETARCH},target=/build/t
 # Export the complete extension, not just the shared library (SQL/control must match).
 FROM scratch AS artifacts
 COPY --from=test /artifacts/ /
+COPY LICENSE /LICENSE
+COPY tests/README.md /README-EXPERIMENTAL.md
 
 FROM postgres:18-trixie AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-18-pgvector libopenblas0-pthread && rm -rf /var/lib/apt/lists/*
 COPY --from=test /artifacts/ /
 CMD ["postgres", "-c", "shared_preload_libraries=pg_search"]
+
+# Disposable integration-test image, not a replacement for production images.
+FROM runtime AS patroni-test
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv && \
+    python3 -m venv /opt/patroni && \
+    /opt/patroni/bin/pip install --no-cache-dir 'patroni[etcd3]==4.1.0' 'psycopg2-binary==2.9.11' && \
+    rm -rf /var/lib/apt/lists/*
+COPY tests/physical_failover/patroni.yml /etc/patroni.yml
+COPY --chmod=755 tests/physical_failover/start-patroni.sh /usr/local/bin/start-test-patroni
+ENTRYPOINT ["/usr/local/bin/start-test-patroni"]

@@ -1,0 +1,43 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.15
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+    volumes:
+      - etcd-data:/etcd-data
+  node1:
+    image: ${PARADEDB_HA_IMAGE:?Set PARADEDB_HA_IMAGE to the built patroni-test image}
+    environment: &patroni-environment
+      PATRONI_NAME: node1
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: node1:5432
+      PATRONI_RESTAPI_CONNECT_ADDRESS: node1:8008
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: disposable-ha-test-only
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: disposable-replication-test-only
+    depends_on:
+      - etcd
+    volumes:
+      - node1-data:/var/lib/postgresql
+  node2:
+    image: ${PARADEDB_HA_IMAGE:?Set PARADEDB_HA_IMAGE to the built patroni-test image}
+    environment:
+      <<: *patroni-environment
+      PATRONI_NAME: node2
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: node2:5432
+      PATRONI_RESTAPI_CONNECT_ADDRESS: node2:8008
+    depends_on:
+      - etcd
+    volumes:
+      - node2-data:/var/lib/postgresql
+volumes:
+  etcd-data:
+  node1-data:
+  node2-data:

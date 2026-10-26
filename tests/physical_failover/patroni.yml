@@ -1,0 +1,38 @@
+# Test-only credentials and private Docker network; no host ports are exposed.
+scope: pg-search-experimental-ha
+namespace: /service/
+restapi:
+  listen: 0.0.0.0:8008
+etcd3:
+  hosts: etcd:2379
+bootstrap:
+  dcs:
+    ttl: 20
+    loop_wait: 2
+    retry_timeout: 3
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      parameters:
+        shared_preload_libraries: pg_search
+        wal_level: replica
+        wal_log_hints: 'on'
+        max_wal_senders: 10
+        max_replication_slots: 10
+        hot_standby: 'on'
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+postgresql:
+  listen: 0.0.0.0:5432
+  bin_dir: /usr/lib/postgresql/18/bin
+  data_dir: /var/lib/postgresql/patroni
+  pg_hba:
+    - local all all trust
+    - host replication replicator all scram-sha-256
+    - host all all all scram-sha-256
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+tags:
+  nofailover: false
+  noloadbalance: false

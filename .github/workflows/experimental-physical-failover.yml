@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: experimental-physical-failover-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     name: PG18 failover (${{ matrix.arch }})
@@ -36,14 +40,28 @@ jobs:
           outputs: type=local,dest=artifacts/physical-failover
           cache-from: type=gha,scope=physical-failover-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=physical-failover-${{ matrix.arch }}
+      - name: Build disposable Patroni test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.experimental-ha
+          target: patroni-test
+          platforms: linux/${{ matrix.arch }}
+          tags: paradedb-physical-failover:ci
+          load: true
+      - name: Test Patroni elections and rejoining
+        env:
+          PARADEDB_HA_IMAGE: paradedb-physical-failover:ci
+        run: python3 tests/physical_failover/smoke.py
       - name: Record revision and checksums
         shell: bash
         run: |
           set -euo pipefail
+          git archive --format=tar HEAD | gzip > artifacts/physical-failover/SOURCE.tar.gz
           cd artifacts/physical-failover
           printf 'source=%s\nplatform=linux/%s\npostgres=18\nfeature=experimental-physical-failover\nstandby_search_reads=disabled\n' \
             "$GITHUB_SHA" '${{ matrix.arch }}' > BUILD-INFO
-          find usr -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
           name: pg_search-pg18-linux-${{ matrix.arch }}-experimental-failover
