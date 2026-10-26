@@ -120,19 +120,19 @@ Build natively on the target architecture, or select `--platform linux/amd64` or
 or a PG18 library on another PostgreSQL major version. Runtime dependencies and
 distribution ABI must match; copying the `.so` alone is not sufficient.
 
-These artifacts use the checked-out fork's workspace extension version (currently
-`0.26.0`), not the version of an installed production extension. The tests create
-fresh databases; they do not validate an in-place upgrade from a released
-`0.26.3` installation. Do not overwrite a production `.so`, relabel this build as
-another release, or downgrade extension SQL. A production rollout needs the patch
-rebased onto the exact deployed release and a tested SQL/format upgrade path.
+This branch is based on the exact upstream `v0.26.3` release commit
+`b3421945b45fdd177272dc9a204c7d47a7cdb527`, not development main. The extension
+version stays `0.26.3`. CI checks that release SQL, the control template, and
+`Cargo.lock` are unchanged. No new SQL or on-disk format migration is introduced.
+This is still an experimental fork, not an upstream supported release. Test in a
+separate production-mode database before considering any production deployment.
 
 The manual **Experimental physical failover artifacts** GitHub Actions workflow
 builds and tests natively on both architectures, then uploads matching extension
 files with the source revision and SHA-256 checksums. Before upload, it also runs
 the disposable Patroni/etcd smoke test below. It does not publish releases
 or deploy a database. It also runs on pushes to the dedicated
-`fix/experimental-physical-index-ha` branch; it does not run on ordinary main pushes.
+`fix/experimental-physical-failover-v0.26.3` branch; it does not run on ordinary main pushes.
 
 ### Disposable Patroni test
 
