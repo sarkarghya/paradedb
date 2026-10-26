@@ -120,6 +120,13 @@ Build natively on the target architecture, or select `--platform linux/amd64` or
 or a PG18 library on another PostgreSQL major version. Runtime dependencies and
 distribution ABI must match; copying the `.so` alone is not sufficient.
 
+These artifacts use the checked-out fork's workspace extension version (currently
+`0.26.0`), not the version of an installed production extension. The tests create
+fresh databases; they do not validate an in-place upgrade from a released
+`0.26.3` installation. Do not overwrite a production `.so`, relabel this build as
+another release, or downgrade extension SQL. A production rollout needs the patch
+rebased onto the exact deployed release and a tested SQL/format upgrade path.
+
 The manual **Experimental physical failover artifacts** GitHub Actions workflow
 builds and tests natively on both architectures, then uploads matching extension
 files with the source revision and SHA-256 checksums. Before upload, it also runs
@@ -151,7 +158,9 @@ test of etcd quorum failure, production fencing, or zero-data-loss semantics.
 - Route search traffic exclusively to Patroni's current primary (the `/primary`
   health check), never to a read-replica pool. Check `pg_is_in_recovery() = false`
   before enabling search on a promoted node. Ordinary standby reads remain native
-  PostgreSQL reads; queries that open ParadeDB metadata can still be rejected.
+  PostgreSQL reads: the fork skips optional search paths and index-only capability
+  probes during recovery. Search operators and direct search-index inspection are
+  still rejected. This check is not cached across promotion.
 - Keep `wal_level = replica` or `logical`. Use physical replication slots/WAL
   retention appropriate to the existing cluster. Never copy live relation files
   or Tantivy caches between nodes with rsync.

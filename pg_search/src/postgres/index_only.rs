@@ -19,6 +19,7 @@ use crate::index::fast_fields_helper::{FFHelper, WhichFastField};
 use crate::index::reader::index::SearchIndexReader;
 use crate::postgres::catalog::OidExt;
 use crate::postgres::rel::PgSearchRelation;
+use crate::postgres::storage::custom_rmgr::experimental_failover_in_recovery;
 use crate::postgres::utils::{FieldSource, pg_search_extension_installed};
 use crate::schema::SearchIndexSchema;
 use pgrx::{PgList, PgMemoryContexts, PgOid, pg_guard, pg_sys};
@@ -38,7 +39,10 @@ pub(crate) fn register_hook() {
             if let Some(previous_hook) = PREV_HOOK {
                 previous_hook(root, rel, rti, rte);
             }
-            if !pg_sys::enable_indexonlyscan || !pg_search_extension_installed() {
+            if experimental_failover_in_recovery()
+                || !pg_sys::enable_indexonlyscan
+                || !pg_search_extension_installed()
+            {
                 return;
             }
 
@@ -262,7 +266,10 @@ unsafe fn index_only_target(
 
 #[pg_guard]
 pub(super) extern "C-unwind" fn amcanreturn(indexrel: pg_sys::Relation, attno: i32) -> bool {
-    if attno <= 0 {
+    // get_relation_info probes this for every index, even for a heap-only query.
+    // Return before reading/caching the schema. A cached negative capability
+    // would also survive promotion in an existing backend.
+    if experimental_failover_in_recovery() || attno <= 0 {
         return false;
     }
 

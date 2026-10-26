@@ -25,6 +25,14 @@ const RMGR_NAME: &CStr = c"pg_search";
 const XLOG_PG_SEARCH_INIT_INDEX: u8 = 0x10;
 const XLOG_PG_SEARCH_INIT_INDEX_NAME: &CStr = c"INIT_INDEX";
 
+/// Native PostgreSQL plans must not open ParadeDB metadata just to consider an
+/// optional search path on a failover replica. Do not cache this: promotion can
+/// happen while the backend (and its relcache) remains alive.
+#[inline]
+pub(crate) fn experimental_failover_in_recovery() -> bool {
+    cfg!(feature = "experimental-physical-failover") && unsafe { pg_sys::RecoveryInProgress() }
+}
+
 #[pg_guard]
 unsafe extern "C-unwind" fn rm_redo(record: *mut pg_sys::XLogReaderState) {
     let info = (*(*record).record).header.xl_info & !(pg_sys::XLR_INFO_MASK as u8);

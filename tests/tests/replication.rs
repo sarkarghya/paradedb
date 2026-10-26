@@ -915,6 +915,17 @@ async fn test_pg_search_physical_failover(
         actual, expected,
         "heap WAL must still replay after index maintenance"
     );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM items")
+        .fetch_one(&mut *standby_conn)
+        .await?;
+    assert_eq!(count, expected.len() as i64);
+    let joined: i64 = sqlx::query_scalar("SELECT count(*) FROM items JOIN ordinary USING (id)")
+        .fetch_one(&mut *standby_conn)
+        .await?;
+    assert_eq!(joined, 1);
+    standby_conn
+        .execute("EXPLAIN SELECT id FROM items WHERE id = 1")
+        .await?;
 
     // A standby restart must replay to consistency with the exact same extension.
     let ctl = &standby.pg_ctl_path;

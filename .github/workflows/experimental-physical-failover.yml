@@ -61,7 +61,10 @@ jobs:
           cd artifacts/physical-failover
           printf 'source=%s\nplatform=linux/%s\npostgres=18\nfeature=experimental-physical-failover\nstandby_search_reads=disabled\n' \
             "$GITHUB_SHA" '${{ matrix.arch }}' > BUILD-INFO
-          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          sed -nE "s/^default_version = '(.*)'$/extension_version=\1/p" \
+            usr/share/postgresql/18/extension/pg_search.control >> BUILD-INFO
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/physical-failover-SHA256SUMS"
+          mv "$RUNNER_TEMP/physical-failover-SHA256SUMS" SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
           name: pg_search-pg18-linux-${{ matrix.arch }}-experimental-failover

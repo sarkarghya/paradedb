@@ -32,6 +32,7 @@ use crate::postgres::node::NodeExt;
 use crate::postgres::planner_warnings::{clear_planner_warnings, emit_planner_warnings};
 use crate::postgres::rel_get_bm25_index;
 use crate::postgres::search_operator_relations;
+use crate::postgres::storage::custom_rmgr::experimental_failover_in_recovery;
 use crate::postgres::utils::pg_search_extension_installed;
 use once_cell::sync::Lazy;
 use pgrx::{PgList, PgMemoryContexts, pg_guard, pg_sys};
@@ -141,7 +142,7 @@ pub extern "C-unwind" fn paradedb_rel_pathlist_callback<CS>(
             return;
         }
 
-        if !gucs::enable_custom_scan() {
+        if experimental_failover_in_recovery() || !gucs::enable_custom_scan() {
             return;
         }
 
@@ -213,7 +214,7 @@ pub extern "C-unwind" fn paradedb_upper_paths_callback<CS>(
 ) where
     CS: CustomScan<Args = CreateUpperPathsHookArgs> + 'static,
 {
-    if !pg_search_extension_installed() {
+    if experimental_failover_in_recovery() || !pg_search_extension_installed() {
         return;
     }
 
@@ -480,7 +481,7 @@ unsafe extern "C-unwind" fn paradedb_planner_hook(
     // Clear any existing warnings for this planning cycle
     clear_planner_warnings();
 
-    if !pg_search_extension_installed() {
+    if experimental_failover_in_recovery() || !pg_search_extension_installed() {
         let result = if let Some(prev_hook) = PREV_PLANNER_HOOK {
             prev_hook(parse, query_string, cursor_options, bound_params)
         } else {
@@ -912,7 +913,7 @@ pub fn register_subplan_join_pathlist() {
                     return;
                 }
 
-                if !gucs::enable_custom_scan() {
+                if experimental_failover_in_recovery() || !gucs::enable_custom_scan() {
                     return;
                 }
 
