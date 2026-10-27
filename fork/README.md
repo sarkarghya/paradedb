@@ -11,11 +11,25 @@ Keep upstream `main` and release tags intact. Develop only on `fork/*` or the
 existing `fix/experimental-physical-failover-v0.26.3` branch. Do not merge upstream
 development main into a release-matched build.
 
+## Fork publishing safety
+
+Keep the inherited upstream release publishers **disabled in this fork's Actions
+settings**: Docs, Debian, macOS, PGXN, Postgres.app, Red Hat, Schema and Ubuntu.
+They listen to every `v*` tag, including fork prereleases, and are intended for
+upstream's publishing credentials/targets. They were disabled in `sarkarghya/paradedb`;
+the experimental failover validation workflow remains enabled. Preserve upstream's
+workflow source files for clean release tracking, but never enable/configure those
+publishers for a fork release. New forks must disable them before creating tags.
+Upload our verified tarballs directly to the distinctly named fork prerelease; no
+Docker registry, PGXN or documentation publication is part of this workflow.
+
 `release.json` pins the exact upstream release commit, extension version and fork
 revision. The extension remains SQL/format-compatible with that upstream release;
 the fork revision identifies our binary separately. CI rejects changes to upstream
 SQL, the control template or `Cargo.lock`. An incompatible upstream change must be
 reviewed explicitly, never relabelled as an existing release.
+Increment `forkRevision` for a new runtime binary at the same upstream version;
+maintenance-only commits do not retroactively change an archived binary.
 
 ## Updating alongside upstream
 
