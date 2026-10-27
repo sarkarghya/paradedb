@@ -1,0 +1,113 @@
+name: ParadeDB HA
+
+# Builds and tests the physical-failover pg_search on PG18. A pushed
+# paradedb-ha-<upstream version>-r<revision> tag also publishes a prerelease.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - paradedb-ha
+      - 'sync/**'
+    tags:
+      - 'paradedb-ha-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paradedb-ha-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: PG18 failover (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify upstream base and unchanged SQL and dependency lock
+        run: |
+          set -euo pipefail
+          upstream=$(jq -r .upstreamCommit fork/release.json)
+          version=$(jq -r '.upstreamTag | ltrimstr("v")' fork/release.json)
+          git merge-base --is-ancestor "$upstream" HEAD
+          grep -Fqx "version = \"$version\"" Cargo.toml
+          git diff --exit-code "$upstream" HEAD -- Cargo.lock pg_search/sql pg_search/pg_search.control
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "$GITHUB_REF_NAME" = "paradedb-ha-$version-r$(jq -r .revision fork/release.json)"
+          fi
+      - uses: docker/setup-buildx-action@v4
+      - name: Compile and test before exporting
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.paradedb-ha
+          target: artifacts
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=local,dest=target/paradedb-ha
+          cache-from: type=gha,scope=paradedb-ha-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=paradedb-ha-${{ matrix.arch }}
+      - name: Build disposable Patroni test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.paradedb-ha
+          target: patroni-test
+          platforms: linux/${{ matrix.arch }}
+          tags: paradedb-ha:ci
+          load: true
+      - name: Test Patroni elections and rejoining
+        env:
+          PARADEDB_HA_IMAGE: paradedb-ha:ci
+        run: python3 tests/physical_failover/smoke.py
+      - name: Package with source and build info
+        run: |
+          set -euo pipefail
+          cd target/paradedb-ha
+          git -C "$GITHUB_WORKSPACE" archive --format=tar HEAD | gzip -n > SOURCE.tar.gz
+          printf 'source=%s\nplatform=linux/%s\npostgres=18\nfeature=experimental-physical-failover\nstandby_search_reads=disabled\n' \
+            "$GITHUB_SHA" '${{ matrix.arch }}' > BUILD-INFO
+          sed -nE "s/^default_version = '(.*)'$/extension_version=\1/p" \
+            usr/share/postgresql/18/extension/pg_search.control >> BUILD-INFO
+          mkdir "$RUNNER_TEMP/dist"
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -c usr BUILD-INFO LICENSE SOURCE.tar.gz \
+            | gzip -n > "$RUNNER_TEMP/dist/pg_search-pg18-trixie-${{ matrix.arch }}.tar.gz"
+          cd "$RUNNER_TEMP/dist" && sha256sum -- *.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pg_search-pg18-trixie-${{ matrix.arch }}
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "$GITHUB_REF_NAME" --notes "Built and tested from $GITHUB_SHA." \
+            -- *.tar.gz SHA256SUMS

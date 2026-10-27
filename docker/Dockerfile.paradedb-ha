@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Fork-only PG18 failover build. No production deployment or registry publication.
+# ParadeDB HA: PG18 pg_search build with physical failover, plus CI test images.
 ARG BUILDER_IMAGE=builder
 FROM postgres:18-trixie AS builder
 
@@ -62,7 +62,6 @@ RUN --mount=type=cache,id=physical-failover-target-${TARGETARCH},target=/build/t
 FROM scratch AS artifacts
 COPY --from=test /artifacts/ /
 COPY LICENSE /LICENSE
-COPY fork/README.md /README-EXPERIMENTAL.md
 
 FROM postgres:18-trixie AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \

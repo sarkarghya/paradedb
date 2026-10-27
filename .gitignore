@@ -7,7 +7,6 @@ CLAUDE.md
 # Build artifacts
 target/
 *.deb
-artifacts/physical-failover/
 
 # Code coverage
 *.profraw

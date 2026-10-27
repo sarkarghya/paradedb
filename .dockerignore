@@ -1,5 +1,4 @@
 .git/
-artifacts/physical-failover/
 **/target/
 **/*.csv
 **/*.csv.gz
