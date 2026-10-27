@@ -1,5 +1,12 @@
 # Parallel ParadeDB fork
 
+Current archived experimental release:
+[`v0.26.3-pointsy.1`](https://github.com/sarkarghya/paradedb/releases/tag/v0.26.3-pointsy.1),
+source `3e9cafa32c9a73fb0e9bd05593268b6f1a4fb802`. Both PG18 architectures passed
+CI; AMD64 also passed Pointsy's separate production-mode source-index HA/browser
+journey. No production deployment is implied. Published binaries are never replaced;
+later source/maintenance commits are not silently included in this release.
+
 Keep upstream `main` and release tags intact. Develop only on `fork/*` or the
 existing `fix/experimental-physical-failover-v0.26.3` branch. Do not merge upstream
 development main into a release-matched build.
@@ -38,6 +45,26 @@ CI builds PG18 on AMD64 and ARM64, tests real physical WAL/promotion and two
 Patroni elections/rejoining cycles, and records source/checksums in the artifact.
 Run Pointsy's isolated production-mode storefront HA journey before adopting a new
 fork build. Do not promote merely because compilation passed.
+
+## Archiving a validated build
+
+Download both architecture artifacts from the **same successful run**, confirm the
+run's `headSha`, and validate the AMD64 binary in Pointsy's separate production-mode
+HA journey. Then package each downloaded directory, using that exact source SHA:
+
+```sh
+python3 fork/package-artifact.py artifacts/physical-failover/linux-amd64 \
+  --arch amd64 --source EXACT_40_CHARACTER_SHA --output artifacts/physical-failover/release
+python3 fork/package-artifact.py artifacts/physical-failover/linux-arm64 \
+  --arch arm64 --source EXACT_40_CHARACTER_SHA --output artifacts/physical-failover/release
+```
+
+The packager verifies every internal checksum, BUILD-INFO identity and the presence
+of the corresponding source and license. It emits deterministic tarballs and their
+SHA-256 values, refuses overwrites, and performs no publication. Archive the tarballs
+as a distinctly tagged fork **prerelease**, targeting the tested source SHA, never
+upstream's tag. Pin the output hashes in Pointsy's database Dockerfile. Publishing
+a fork prerelease is not authorization to deploy it or push any database schema.
 
 ## Consumer contract
 

@@ -41,6 +41,8 @@ jobs:
           git merge-base --is-ancestor "$release" HEAD
           grep -Fqx "version = \"$version\"" Cargo.toml
           git diff --exit-code "$release" HEAD -- Cargo.lock pg_search/sql pg_search/pg_search.control
+          git apply --reverse --check fork/physical-failover.patch
+          python3 -m unittest discover -s tests/physical_failover -p test_artifact.py -v
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
       - name: Compile and test before exporting
