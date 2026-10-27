@@ -1,5 +1,9 @@
 # Parallel ParadeDB fork
 
+Future agents: start with [AGENT-HANDOFF.md](AGENT-HANDOFF.md) for provenance,
+repository/image locations, application changes, validation evidence and the full
+maintenance checklist. The root `AGENTS.md` records the safety constraints.
+
 Current archived experimental release:
 [`v0.26.3-pointsy.1`](https://github.com/sarkarghya/paradedb/releases/tag/v0.26.3-pointsy.1),
 source `3e9cafa32c9a73fb0e9bd05593268b6f1a4fb802`. Both PG18 architectures passed
