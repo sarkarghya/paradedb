@@ -101,9 +101,10 @@ drill used the **full pinned HA image**, not only an overlay on the old test ima
 Follow-up maintenance CI at `2b1d5e3c...` was superseded/cancelled, not a failure of
 the released runtime. Run
 [40462422558](https://github.com/sarkarghya/paradedb/actions/runs/40462422558), at
-`478cf6c03707adcef50495a0aedea1800df36f9b`, was still running when this note was
-written. Check its actual conclusion; do not confuse it with the successful build
-that supplied the archived binary. Do not rerun/cancel builds solely to refresh docs.
+`478cf6c03707adcef50495a0aedea1800df36f9b`, subsequently completed successfully.
+This validates the later maintenance tooling too; the archived binary remains
+pinned to `3e9cafa32c9a73fb0e9bd05593268b6f1a4fb802`, not that later commit.
+Do not rerun/cancel builds solely to refresh docs.
 
 ## Implementation map
 
