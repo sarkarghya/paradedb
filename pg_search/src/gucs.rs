@@ -53,6 +53,10 @@ static DISJUNCTION_PRUNING: GucSetting<DisjunctionPruning> =
 /// a `BufFile` temp file on `work_mem` overflow, instead of erroring. Off by default.
 static SPILL_TO_DISK: GucSetting<bool> = GucSetting::<bool>::new(false);
 
+// Read-only build capability, not a setting that can enable unsupported WAL replay.
+static PHYSICAL_FAILOVER: GucSetting<bool> =
+    GucSetting::<bool>::new(cfg!(feature = "experimental-physical-failover"));
+
 /// Allows the user to toggle the use of our "ParadeDB Base Scan".
 static ENABLE_CUSTOM_SCAN: GucSetting<bool> = GucSetting::<bool>::new(true);
 
@@ -387,6 +391,15 @@ pub fn vector_clustering_threshold() -> usize {
 pub fn init() {
     // Note that Postgres is very specific about the naming convention of variables.
     // They must be namespaced... we use 'paradedb.<variable>' below.
+
+    GucRegistry::define_bool_guc(
+        c"paradedb.physical_failover",
+        c"Whether this fork was compiled with experimental physical failover support",
+        c"Read-only build capability. Standby search reads remain unsupported; search is available after promotion.",
+        &PHYSICAL_FAILOVER,
+        GucContext::Internal,
+        GucFlags::default(),
+    );
 
     GucRegistry::define_bool_guc(
         c"paradedb.spill_to_disk",

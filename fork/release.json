@@ -1,0 +1,8 @@
+{
+  "upstreamRepository": "paradedb/paradedb",
+  "upstreamTag": "v0.26.3",
+  "upstreamCommit": "b3421945b45fdd177272dc9a204c7d47a7cdb527",
+  "extensionVersion": "0.26.3",
+  "forkRevision": 1,
+  "feature": "experimental-physical-failover"
+}

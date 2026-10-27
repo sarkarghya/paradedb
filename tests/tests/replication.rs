@@ -815,6 +815,14 @@ async fn test_pg_search_physical_failover(
     primary_conn: &mut PgConnection,
     standby_conn: &mut PgConnection,
 ) -> Result<()> {
+    let capability: String = sqlx::query_scalar("SHOW paradedb.physical_failover")
+        .fetch_one(&mut *primary_conn)
+        .await?;
+    assert_eq!(capability, "on");
+    let capability: String = sqlx::query_scalar("SHOW paradedb.physical_failover")
+        .fetch_one(&mut *standby_conn)
+        .await?;
+    assert_eq!(capability, "on");
     // Ordinary relations must continue to stream after INIT_INDEX, including an
     // ordinary index on a different table. An empty search index also emits a marker.
     primary_conn
